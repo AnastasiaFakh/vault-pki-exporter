@@ -355,9 +355,9 @@ testcases:
             from: result.bodyjson.data.serial_number
             regex: ".*" # not sure it's worth a proper regex
             default: "0"
-      - name: wait 20s
+      - name: wait 45s
         type: exec
-        script: sleep 20
+        script: sleep 45
       - name: Make sure metrics exist for soon-to-be-revoked-cert
         type: http
         method: GET
@@ -387,9 +387,9 @@ testcases:
           Content-Type: application/json
         assertions:
           - result.statuscode ShouldEqual 200
-      - name: wait 20s
+      - name: wait 45s
         type: exec
-        script: sleep 20
+        script: sleep 45
       - name: Make sure metrics are cleared for revoked cert
         type: http
         method: GET
