@@ -84,6 +84,11 @@ func init() {
 		logger.SlogFatal("Could not bind request-limit-burst flag", "error", err)
 	}
 
+	flags.StringArray("external-crl", nil, "Use a KV v2 CRL for a PKI mount: <pki-mount>=<kv-api-path>:<field>")
+	if err := viper.BindPFlag("external_crl", flags.Lookup("external-crl")); err != nil {
+		logger.SlogFatal("Could not bind external-crl flag", "error", err)
+	}
+
 	flags.BoolP("help", "h", false, "Show help message")
 	if err := viper.BindPFlag("help", flags.Lookup("help")); err != nil {
 		logger.SlogFatal("Could not bind help flag", "error", err)
@@ -127,7 +132,7 @@ func entrypoint() {
 	vaultcli.Init()
 
 	pkiMon := vaultMon.PKIMon{}
-	err := pkiMon.Init(vaultcli.Client)
+	err := pkiMon.Init(vaultcli.Client, viper.GetStringSlice("external_crl"))
 	if err != nil {
 		slog.Error("PKIMon initialization failed", "error", err)
 	}

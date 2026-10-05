@@ -23,6 +23,7 @@ type PKI struct {
 	path                string
 	certs               map[string]map[string]*x509.Certificate
 	crls                map[string]*x509.RevocationList
+	externalCRL         *externalCRLSource
 	crlRawSize          int
 	expiredCertsCounter int
 	vault               *vaultapi.Client
@@ -32,10 +33,11 @@ type PKI struct {
 
 // PKIMon helps watch all the possible PKI secrets engines
 type PKIMon struct {
-	pkis   map[string]*PKI
-	vault  *vaultapi.Client
-	mux    sync.Mutex
-	Loaded bool
+	pkis               map[string]*PKI
+	externalCRLSources map[string]externalCRLSource
+	vault              *vaultapi.Client
+	mux                sync.Mutex
+	Loaded             bool
 }
 
 var loadCertsDuration = promauto.NewHistogram(prometheus.HistogramOpts{
@@ -51,9 +53,15 @@ var loadCertsLimitDuration = promauto.NewHistogram(prometheus.HistogramOpts{
 })
 
 // Init makes a new Vault client
-func (mon *PKIMon) Init(vault *vaultapi.Client) error {
+func (mon *PKIMon) Init(vault *vaultapi.Client, externalCRLValues []string) error {
+	externalCRLSources, err := parseExternalCRLSources(externalCRLValues)
+	if err != nil {
+		return err
+	}
+
 	mon.vault = vault
 	mon.pkis = make(map[string]*PKI)
+	mon.externalCRLSources = externalCRLSources
 	return nil
 }
 
@@ -74,6 +82,9 @@ func (mon *PKIMon) loadPKI() error {
 		if mount.Type == "pki" {
 			if _, ok := mon.pkis[name]; !ok {
 				pki := PKI{path: name, vault: mon.vault, certs: make(map[string]map[string]*x509.Certificate)}
+				if source, ok := mon.externalCRLSources[name]; ok {
+					pki.externalCRL = &source
+				}
 				mon.pkis[name] = &pki
 				slog.Info("PKI loaded", "pki", pki.path)
 			}
@@ -100,6 +111,9 @@ func (mon *PKIMon) Watch(interval time.Duration) {
 				err = pki.loadCrl()
 				if err != nil {
 					slog.Error("Error loading CRL", "pki", pki.path, "error", err)
+					if pki.externalCRL != nil {
+						continue
+					}
 				}
 
 				err := pki.loadCerts()
@@ -125,16 +139,26 @@ func (mon *PKIMon) GetPKIs() map[string]*PKI {
 func (pki *PKI) loadCrl() error {
 	pki.crlmux.Lock()
 	defer pki.crlmux.Unlock()
+	pki.crls = make(map[string]*x509.RevocationList)
+	pki.crlRawSize = 0
+
+	if pki.externalCRL != nil {
+		crl, rawSize, err := pki.loadExternalCRL(time.Now())
+		if err != nil {
+			externalCRLUp.WithLabelValues(pki.path).Set(0)
+			return err
+		}
+
+		pki.crls[pki.externalCRL.path] = crl
+		pki.crlRawSize = rawSize
+		externalCRLUp.WithLabelValues(pki.path).Set(1)
+		return nil
+	}
 
 	// List all issuers to get multiple CRLs per PKI engine
 	issuers, err := pki.listIssuers()
 	if err != nil {
 		return err
-	}
-
-	if pki.crls == nil {
-		pki.crls = make(map[string]*x509.RevocationList)
-		slog.Warn("Initialized an empty certs list", "pki", pki.path)
 	}
 
 	for _, issuerRef := range issuers {
@@ -337,15 +361,15 @@ func (pki *PKI) loadCerts() error {
 					orgUnit = cert.Subject.OrganizationalUnit[0]
 				}
 
-				certsMux.Lock()
-				if _, exists := pki.certs[commonName]; !exists {
-					pki.certs[commonName] = make(map[string]*x509.Certificate)
-				}
-
 				// if cert is revoked, never add it to the map
 				if _, isRevoked := revokedCerts[cert.SerialNumber.String()]; isRevoked {
 					slog.Debug("Cert rejected as it is revoked", "pki", pki.path, "serial", serial, "common_name", cert.Subject.CommonName, "organizational_unit", cert.Subject.OrganizationalUnit)
 					return
+				}
+
+				certsMux.Lock()
+				if _, exists := pki.certs[commonName]; !exists {
+					pki.certs[commonName] = make(map[string]*x509.Certificate)
 				}
 
 				// if cert is in map already or the new cert has a *later* expiration date, update map

@@ -43,6 +43,7 @@ Flags:
       --prometheus                  Enable prometheus exporter, default if nothing else
       --refresh-interval duration   How many sec between metrics update (default 1m0s)
       --batch-size-percent          How large of a batch of certificates to get data for at once, supports floats (e.g 0.0 - 100.0) (default 1)
+      --external-crl strings        Use a KV v2 CRL for a PKI mount: <pki-mount>=<kv-api-path>:<field>
       --log-level                   Set log level (options: info, warn, error, debug)
       --request-limit float         Token-bucket limiter for number of requests per second to Vault when fetching certs (0 = disabled)
       --request-limit-burst int     Token-bucket burst limit for number of requests per second to Vault when fetching certs (0 = match 'request-limit' value)
@@ -104,6 +105,16 @@ Any certificate with a unique subject common name and organizational unit is con
 Revoked certificates are not considered for metrics and their time series will be deleted when an "active" certificate is deleted.
 
 Expired certificates still retain their time series too.
+
+## External CRL
+
+Use `--external-crl` when a PKI mount's complete CRL is published in KV v2 instead of the native PKI CRL endpoint:
+
+```console
+vault-pki-exporter --external-crl pki_cs_partner_test=app/data/cs.partner/pki/ca-crl:ca.crl
+```
+
+The flag can be repeated for multiple PKI mounts. The exporter verifies the CRL issuer, signature, and validity against the mount CA before excluding revoked certificates. If validation fails, certificate metrics for that mount are withheld and `x509_external_crl_up{source="<mount>/"}` is set to `0`.
 
 ## PKI Engine Selection
 
