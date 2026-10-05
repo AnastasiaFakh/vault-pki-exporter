@@ -21,7 +21,7 @@ import (
 // PKI has details about the Vault PKI Secrets Engine
 type PKI struct {
 	path                string
-	certs               map[string]map[string]*x509.Certificate
+	certs               map[string]*x509.Certificate
 	crls                map[string]*x509.RevocationList
 	externalCRL         *externalCRLSource
 	crlRawSize          int
@@ -81,7 +81,7 @@ func (mon *PKIMon) loadPKI() error {
 	for name, mount := range mounts {
 		if mount.Type == "pki" {
 			if _, ok := mon.pkis[name]; !ok {
-				pki := PKI{path: name, vault: mon.vault, certs: make(map[string]map[string]*x509.Certificate)}
+				pki := PKI{path: name, vault: mon.vault, certs: make(map[string]*x509.Certificate)}
 				if source, ok := mon.externalCRLSources[name]; ok {
 					pki.externalCRL = &source
 				}
@@ -244,7 +244,7 @@ func (pki *PKI) loadCerts() error {
 	defer pki.certsmux.Unlock()
 
 	if pki.certs == nil {
-		pki.certs = make(map[string]map[string]*x509.Certificate)
+		pki.certs = make(map[string]*x509.Certificate)
 		slog.Warn("Initialized an empty certs list", "pki", pki.path)
 	}
 
@@ -252,6 +252,7 @@ func (pki *PKI) loadCerts() error {
 	if err != nil {
 		return err
 	}
+	pki.expiredCertsCounter = 0
 	if secret == nil || secret.Data == nil {
 		// if path has no certs, exit straight away
 		// before hitting a segfault
@@ -263,9 +264,6 @@ func (pki *PKI) loadCerts() error {
 	if err != nil {
 		return err
 	}
-
-	// reset expired certs to avoid counter creep
-	pki.expiredCertsCounter = 0
 
 	// determine batch size dynamically based on the length of serialsList.Keys
 	batchSizePercentage := viper.GetFloat64("batch_size_percent")
@@ -354,13 +352,6 @@ func (pki *PKI) loadCerts() error {
 					return
 				}
 
-				commonName := cert.Subject.CommonName
-				orgUnit := ""
-				// define certs by their commonName and *Subject* (not issuer) OU
-				if len(cert.Subject.OrganizationalUnit) > 0 {
-					orgUnit = cert.Subject.OrganizationalUnit[0]
-				}
-
 				// if cert is revoked, never add it to the map
 				if _, isRevoked := revokedCerts[cert.SerialNumber.String()]; isRevoked {
 					slog.Debug("Cert rejected as it is revoked", "pki", pki.path, "serial", serial, "common_name", cert.Subject.CommonName, "organizational_unit", cert.Subject.OrganizationalUnit)
@@ -368,16 +359,8 @@ func (pki *PKI) loadCerts() error {
 				}
 
 				certsMux.Lock()
-				if _, exists := pki.certs[commonName]; !exists {
-					pki.certs[commonName] = make(map[string]*x509.Certificate)
-				}
-
-				// if cert is in map already or the new cert has a *later* expiration date, update map
-				// handles renewal of existing cert smoothly
-				if existingCert, ok := pki.certs[commonName][orgUnit]; !ok || existingCert.NotAfter.Before(cert.NotAfter) {
-					pki.certs[commonName][orgUnit] = cert
-					slog.Debug("Updated certificate in map", "pki", pki.path, "serial", serial, "common_name", cert.Subject.CommonName, "organizational_unit", cert.Subject.OrganizationalUnit)
-				}
+				pki.certs[cert.SerialNumber.String()] = cert
+				slog.Debug("Updated certificate in map", "pki", pki.path, "serial", serial, "common_name", cert.Subject.CommonName, "organizational_unit", cert.Subject.OrganizationalUnit)
 
 				if cert.NotAfter.Before(time.Now()) {
 					pki.expiredCertsCounter++
@@ -396,7 +379,7 @@ func (pki *PKI) loadCerts() error {
 
 func (pki *PKI) clearCerts() {
 	pki.certsmux.Lock()
-	pki.certs = make(map[string]map[string]*x509.Certificate)
+	pki.certs = make(map[string]*x509.Certificate)
 	pki.certsmux.Unlock()
 }
 
@@ -408,8 +391,12 @@ func (pki *PKI) GetCRLs() map[string]*x509.RevocationList {
 }
 
 // GetCerts is a thread safe way to return all certs used by various PKI engines
-func (pki *PKI) GetCerts() map[string]map[string]*x509.Certificate {
+func (pki *PKI) GetCerts() map[string]*x509.Certificate {
 	pki.certsmux.Lock()
 	defer pki.certsmux.Unlock()
-	return pki.certs
+	certs := make(map[string]*x509.Certificate, len(pki.certs))
+	for serial, cert := range pki.certs {
+		certs[serial] = cert
+	}
+	return certs
 }

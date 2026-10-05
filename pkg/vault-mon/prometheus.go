@@ -41,11 +41,11 @@ func PromWatchCerts(pkimon *PKIMon, interval time.Duration) {
 	}, labelNames)
 	certcount := promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "x509_cert_count",
-		Help: "Total count of non-expired certificates including revoked certificates",
+		Help: "Total count of stored certificates excluding revoked certificates",
 	}, []string{"source"})
 	expiredCertCount := promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "x509_expired_cert_count",
-		Help: "Total count of expired certificates including revoked certificates",
+		Help: "Total count of expired certificates excluding revoked certificates",
 	}, []string{"source"})
 	crlExpiry := promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "x509_crl_expiry",
@@ -71,12 +71,17 @@ func PromWatchCerts(pkimon *PKIMon, interval time.Duration) {
 			startTime := time.Now()
 			pkis := pkimon.GetPKIs()
 			now := time.Now()
-			revokedCerts := make(map[string]struct{})
 
 			slog.Debug("Starting new PromWatchCerts loop", "interval_seconds", interval.Seconds(), "pkis_count", len(pkis))
 
 			for pkiname, pki := range pkis {
 				slog.Info("Processing PKI", "pki", pkiname)
+				certs := pki.GetCerts()
+				sourceLabels := prometheus.Labels{"source": pkiname}
+				expiry.DeletePartialMatch(sourceLabels)
+				age.DeletePartialMatch(sourceLabels)
+				startdate.DeletePartialMatch(sourceLabels)
+				enddate.DeletePartialMatch(sourceLabels)
 
 				for _, crl := range pki.GetCRLs() {
 					if crl != nil {
@@ -89,48 +94,22 @@ func PromWatchCerts(pkimon *PKIMon, interval time.Duration) {
 
 						slog.Debug("Updated CRL metrics", "pki", pkiname, "issuer", issuer, "next_update", crl.NextUpdate)
 
-						// gather revoked certs from the CRL so we can exclude their metrics later
-						for _, revokedCert := range crl.RevokedCertificateEntries {
-
-							// loadCerts() also excludes revoked certs from the cert map
-							// but this goes an extra step and deletes certificate metrics on every Prometheus refresh interval instead
-							// must not compare to GetCerts() map but just from each CRL load
-							revokedCerts[revokedCert.SerialNumber.String()] = struct{}{}
-
-							// Only know serial number natively from revokedCert object
-							labels := prometheus.Labels{
-								"serial": strings.ReplaceAll(fmt.Sprintf("% x", revokedCert.SerialNumber.Bytes()), " ", "-"),
-							}
-
-							expiry.DeletePartialMatch(labels)
-							age.DeletePartialMatch(labels)
-							startdate.DeletePartialMatch(labels)
-							enddate.DeletePartialMatch(labels)
-
-							slog.Debug("Cleared metrics for revoked certificate", "pki", pkiname, "serial", revokedCert.SerialNumber.String())
-						}
 					}
 				}
 
-				for _, orgUnits := range pki.GetCerts() {
-					for _, cert := range orgUnits {
-
-						certlabels := getLabelValues(pkiname, cert)
-
-						expiry.WithLabelValues(certlabels...).Set(float64(cert.NotAfter.Sub(now).Seconds()))
-						age.WithLabelValues(certlabels...).Set(float64(now.Sub(cert.NotBefore).Seconds()))
-						startdate.WithLabelValues(certlabels...).Set(float64(cert.NotBefore.Unix()))
-						enddate.WithLabelValues(certlabels...).Set(float64(cert.NotAfter.Unix()))
-
-						slog.Debug("Updated certificate metrics", "pki", pkiname, "serial", cert.SerialNumber, "common_name", cert.Subject.CommonName, "organizational_unit", cert.Subject.OrganizationalUnit)
-					}
-					certcount.WithLabelValues(pkiname).Set(float64(len(pki.certs)))
-					expiredCertCount.WithLabelValues(pkiname).Set(float64(pki.expiredCertsCounter))
-
+				for _, cert := range certs {
+					certlabels := getLabelValues(pkiname, cert)
+					expiry.WithLabelValues(certlabels...).Set(float64(cert.NotAfter.Sub(now).Seconds()))
+					age.WithLabelValues(certlabels...).Set(float64(now.Sub(cert.NotBefore).Seconds()))
+					startdate.WithLabelValues(certlabels...).Set(float64(cert.NotBefore.Unix()))
+					enddate.WithLabelValues(certlabels...).Set(float64(cert.NotAfter.Unix()))
+					slog.Debug("Updated certificate metrics", "pki", pkiname, "serial", cert.SerialNumber, "common_name", cert.Subject.CommonName, "organizational_unit", cert.Subject.OrganizationalUnit)
 				}
+				certcount.WithLabelValues(pkiname).Set(float64(len(certs)))
+				expiredCertCount.WithLabelValues(pkiname).Set(float64(pki.expiredCertsCounter))
 				duration := time.Since(startTime).Seconds()
 				promWatchCertsDuration.Observe(duration)
-				slog.Info("PKI Prometheus metrics updated, sleeping", "pki", pkiname, "total_certs", len(pki.certs), "expired_certs", pki.expiredCertsCounter, "duration_seconds", duration, "interval", interval)
+				slog.Info("PKI Prometheus metrics updated, sleeping", "pki", pkiname, "total_certs", len(certs), "expired_certs", pki.expiredCertsCounter, "duration_seconds", duration, "interval", interval)
 				time.Sleep(interval)
 			}
 		}
