@@ -16,7 +16,7 @@ import (
 var version string
 var cli = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
-		entrypoint()
+		entrypoint(cmd)
 	},
 }
 
@@ -85,9 +85,6 @@ func init() {
 	}
 
 	flags.StringArray("external-crl", nil, "Use a KV v2 CRL for a PKI mount: <pki-mount>=<kv-api-path>:<field>")
-	if err := viper.BindPFlag("external_crl", flags.Lookup("external-crl")); err != nil {
-		logger.SlogFatal("Could not bind external-crl flag", "error", err)
-	}
 
 	flags.BoolP("help", "h", false, "Show help message")
 	if err := viper.BindPFlag("help", flags.Lookup("help")); err != nil {
@@ -126,15 +123,20 @@ func main() {
 	}
 }
 
-func entrypoint() {
+func entrypoint(cmd *cobra.Command) {
 
 	vaultcli := vault.ClientWrapper{}
 	vaultcli.Init()
 
 	pkiMon := vaultMon.PKIMon{}
-	err := pkiMon.Init(vaultcli.Client, viper.GetStringSlice("external_crl"))
+	externalCRLValues, err := cmd.Flags().GetStringArray("external-crl")
 	if err != nil {
-		slog.Error("PKIMon initialization failed", "error", err)
+		logger.SlogFatal("Could not read external-crl flag", "error", err)
+	}
+
+	err = pkiMon.Init(vaultcli.Client, externalCRLValues)
+	if err != nil {
+		logger.SlogFatal("PKIMon initialization failed", "error", err)
 	}
 
 	pkiMon.Watch(viper.GetDuration("fetch_interval"))
