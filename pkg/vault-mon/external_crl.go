@@ -35,14 +35,18 @@ func parseExternalCRLSources(values []string) (map[string]externalCRLSource, err
 		}
 
 		mount = strings.Trim(strings.TrimSpace(mount), "/") + "/"
-		if _, exists := sources[mount]; exists {
-			return nil, fmt.Errorf("external CRL is configured more than once for %s", mount)
-		}
-
-		sources[mount] = externalCRLSource{
+		source := externalCRLSource{
 			path:  strings.Trim(strings.TrimSpace(location[:separator]), "/"),
 			field: strings.TrimSpace(location[separator+1:]),
 		}
+		if existing, exists := sources[mount]; exists {
+			if existing == source {
+				continue
+			}
+			return nil, fmt.Errorf("external CRL has conflicting configurations for %s", mount)
+		}
+
+		sources[mount] = source
 	}
 
 	return sources, nil

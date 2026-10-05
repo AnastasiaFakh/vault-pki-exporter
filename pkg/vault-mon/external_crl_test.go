@@ -28,6 +28,27 @@ func TestParseExternalCRLSources(t *testing.T) {
 	}
 }
 
+func TestParseExternalCRLSourcesAcceptsIdenticalValues(t *testing.T) {
+	mapping := "pki_cs_partner_test=app/data/cs.partner/pki/ca-crl:ca.crl"
+	sources, err := parseExternalCRLSources([]string{mapping, mapping})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sources) != 1 {
+		t.Fatalf("expected one source, got %d", len(sources))
+	}
+}
+
+func TestParseExternalCRLSourcesRejectsConflictingValues(t *testing.T) {
+	_, err := parseExternalCRLSources([]string{
+		"pki_cs_partner_test=app/data/cs.partner/pki/ca-crl:ca.crl",
+		"pki_cs_partner_test=app/data/cs.partner/pki/other:ca.crl",
+	})
+	if err == nil {
+		t.Fatal("expected conflicting mappings to fail")
+	}
+}
+
 func TestParseExternalCRLSourcesRejectsInvalidValue(t *testing.T) {
 	if _, err := parseExternalCRLSources([]string{"pki_cs_partner_test"}); err == nil {
 		t.Fatal("expected invalid mapping to fail")
